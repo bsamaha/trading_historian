@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: candle-event-ingestion
+  namespace: your-namespace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: candle-event-ingestion
+  template:
+    metadata:
+      labels:
+        app: candle-event-ingestion
+    spec:
+      containers:
+      - name: candle-event-ingestion
+        image: bsamaha/candle-event-ingestion:latest  # This is now correct
+        env:
+        - name: KAFKA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: kafka-user-passwords
+              key: client-passwords
+        - name: INFLUXDB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-admin-secret
+              key: admin-password
+        - name: ASPNETCORE_ENVIRONMENT  # Add this
+          value: Production
+        volumeMounts:
+        - name: config
+          mountPath: /app/appsettings.json
+          subPath: appsettings.json
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: candle-event-ingestion-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: candle-event-ingestion-config
+  namespace: your-namespace
+data:
+  appsettings.json: |
+    {
+      "Kafka": {
+        "BootstrapServers": "kafka.kafka.svc.cluster.local:9092",
+        "GroupId": "candle-event-ingestion-consumer",
+        "Topic": "candles",
+        "Username": "user1"
+      },
+      "InfluxDB": {
+        "Url": "http://influxdb.influxdb.svc.cluster.local:8086",
+        "Bucket": "crypto",
+        "Org": "your_org_name"
+      }
+    }
