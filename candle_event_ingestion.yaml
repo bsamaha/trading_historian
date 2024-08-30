@@ -20,9 +20,8 @@ spec:
         - name: KAFKA_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: kafka-user-passwords
-              key: client-passwords
-              namespace: kafka  # Add this line to reference the kafka namespace
+              name: kafka-secret-reference
+              key: KAFKA_PASSWORD
         - name: INFLUXDB_TOKEN
           valueFrom:
             secretKeyRef:
