@@ -22,7 +22,6 @@ public class Program
                 })
                 .Build();
 
-            // Ensure InfluxDB bucket exists before starting the KafkaConsumerService
             var influxDBService = host.Services.GetRequiredService<IInfluxDBService>();
             await influxDBService.EnsureBucketExistsAsync();
 

@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Confluent.Kafka;
 
@@ -28,49 +27,46 @@ public class AppConfig
         public string? Token { get; set; }
     }
 
-    public static AppConfig LoadConfig(IConfiguration configuration, ILogger<AppConfig> logger)
+    public static AppConfig LoadConfig(ILogger<AppConfig> logger)
     {
-        logger.LogInformation("Loading application configuration");
-        var config = new AppConfig();
-
-        try
+        logger.LogInformation("Loading application configuration from environment variables");
+        var config = new AppConfig
         {
-            configuration.Bind(config);
-            logger.LogDebug("Configuration bound successfully");
+            Kafka = new KafkaConfig
+            {
+                BootstrapServers = GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS", logger),
+                GroupId = GetEnvironmentVariable("KAFKA_GROUP_ID", logger),
+                Topic = GetEnvironmentVariable("KAFKA_TOPIC", logger),
+                Username = GetEnvironmentVariable("KAFKA_SASL_USERNAME", logger),
+                Password = GetEnvironmentVariable("KAFKA_PASSWORD", logger),
+                SecurityProtocol = GetEnvironmentVariable("KAFKA_SECURITY_PROTOCOL", logger),
+                SaslMechanism = GetEnvironmentVariable("KAFKA_SASL_MECHANISM", logger)
+            },
+            InfluxDB = new InfluxDBConfig
+            {
+                Url = GetEnvironmentVariable("INFLUXDB_URL", logger),
+                Bucket = GetEnvironmentVariable("INFLUXDB_BUCKET", logger),
+                Org = GetEnvironmentVariable("INFLUXDB_ORG", logger),
+                Token = GetEnvironmentVariable("INFLUXDB_TOKEN", logger)
+            }
+        };
 
-            // Load sensitive data from environment variables
-            config.Kafka.Password = GetEnvironmentVariable("KAFKA_PASSWORD", logger);
-            config.Kafka.BootstrapServers = GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS", logger) ?? config.Kafka.BootstrapServers;
-            config.Kafka.Username = GetEnvironmentVariable("KAFKA_SASL_USERNAME", logger) ?? config.Kafka.Username;
-            config.Kafka.SecurityProtocol = GetEnvironmentVariable("KAFKA_SECURITY_PROTOCOL", logger) ?? config.Kafka.SecurityProtocol;
-            config.Kafka.SaslMechanism = GetEnvironmentVariable("KAFKA_SASL_MECHANISM", logger) ?? config.Kafka.SaslMechanism;
-            config.InfluxDB.Token = GetEnvironmentVariable("INFLUXDB_TOKEN", logger);
-            config.InfluxDB.Url = GetEnvironmentVariable("INFLUXDB_URL", logger) ?? config.InfluxDB.Url;
+        ValidateConfiguration(config, logger);
+        ValidateKafkaSecuritySettings(config.Kafka, logger);
 
-            ValidateConfiguration(config, logger);
-            ValidateKafkaSecuritySettings(config.Kafka, logger);
-
-            logger.LogInformation("Configuration loaded successfully");
-            return config;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error loading configuration");
-            throw new InvalidOperationException("Failed to load application configuration", ex);
-        }
+        logger.LogInformation("Configuration loaded successfully");
+        return config;
     }
 
-    private static string? GetEnvironmentVariable(string variableName, ILogger logger)
+    private static string GetEnvironmentVariable(string variableName, ILogger logger)
     {
         var value = Environment.GetEnvironmentVariable(variableName);
         if (string.IsNullOrEmpty(value))
         {
-            logger.LogWarning("Environment variable {VariableName} is not set or empty", variableName);
+            logger.LogError("Environment variable {VariableName} is not set or empty", variableName);
+            throw new InvalidOperationException($"Environment variable {variableName} is not set or empty");
         }
-        else
-        {
-            logger.LogDebug("Environment variable {VariableName} loaded successfully", variableName);
-        }
+        logger.LogDebug("Environment variable {VariableName} loaded successfully", variableName);
         return value;
     }
 
@@ -106,14 +102,20 @@ public class AppConfig
 
     private static void ValidateKafkaSecuritySettings(KafkaConfig kafkaConfig, ILogger logger)
     {
-        if (!Enum.TryParse<SecurityProtocol>(kafkaConfig.SecurityProtocol, out _))
+        if (!string.IsNullOrEmpty(kafkaConfig.SecurityProtocol))
         {
-            logger.LogWarning("Invalid Kafka SecurityProtocol: {SecurityProtocol}", kafkaConfig.SecurityProtocol);
+            if (!Enum.TryParse<SecurityProtocol>(kafkaConfig.SecurityProtocol, out _))
+            {
+                logger.LogWarning("Invalid Kafka SecurityProtocol: {SecurityProtocol}", kafkaConfig.SecurityProtocol);
+            }
         }
 
-        if (!Enum.TryParse<SaslMechanism>(kafkaConfig.SaslMechanism, out _))
+        if (!string.IsNullOrEmpty(kafkaConfig.SaslMechanism))
         {
-            logger.LogWarning("Invalid Kafka SaslMechanism: {SaslMechanism}", kafkaConfig.SaslMechanism);
+            if (!Enum.TryParse<SaslMechanism>(kafkaConfig.SaslMechanism, out _))
+            {
+                logger.LogWarning("Invalid Kafka SaslMechanism: {SaslMechanism}", kafkaConfig.SaslMechanism);
+            }
         }
     }
 }
