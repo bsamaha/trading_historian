@@ -1,25 +1,21 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace KafkaToInfluxDB.Services;
 
 public class ConfigurationService
 {
     private readonly IConfiguration _configuration;
+    private readonly ILogger<AppConfig> _logger;
 
-    public ConfigurationService(IConfiguration configuration)
+    public ConfigurationService(IConfiguration configuration, ILogger<AppConfig> logger)
     {
         _configuration = configuration;
+        _logger = logger;
     }
 
     public AppConfig GetAppConfig()
     {
-        var config = new AppConfig();
-        _configuration.Bind(config);
-
-        // Load sensitive data from environment variables
-        config.Kafka.Password = Environment.GetEnvironmentVariable("KAFKA_PASSWORD")!;
-        config.InfluxDB.Token = Environment.GetEnvironmentVariable("INFLUXDB_TOKEN")!;
-
-        return config;
+        return AppConfig.LoadConfig(_configuration, _logger);
     }
 }

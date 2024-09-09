@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: candle-event-ingestion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: candle-event-ingestion
+  template:
+    metadata:
+      labels:
+        app: candle-event-ingestion
+    spec:
+      containers:
+      - name: candle-event-ingestion
+        image: bsamaha/candle-event-ingestion:latest
+        env:
+        - name: KAFKA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: kafka-user-passwords
+              key: client-passwords
+        - name: INFLUXDB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-admin-secret
+              key: admin-password
+        - name: ASPNETCORE_ENVIRONMENT
+          value: Production
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka-broker-headless.default.svc.cluster.local:9092"
+        - name: KAFKA_SASL_USERNAME
+          value: "user1"
+        - name: KAFKA_SECURITY_PROTOCOL
+          value: "SaslPlaintext"
+        - name: KAFKA_SASL_MECHANISM
+          value: "ScramSha256"
+        - name: KAFKA_GROUP_ID
+          value: "candle-event-ingestion-consumer"
+        - name: KAFKA_TOPIC
+          value: "candles"
+        - name: INFLUXDB_URL
+          value: "http://influxdb.influxdb.svc.cluster.local:8086"
+        - name: INFLUXDB_BUCKET
+          value: "crypto"
+        - name: INFLUXDB_ORG
+          value: "epochtech"
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10

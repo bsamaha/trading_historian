@@ -10,10 +10,10 @@ namespace KafkaToInfluxDB.Services;
 public class KafkaConsumerService : BackgroundService
 {
     private readonly AppConfig _appConfig;
-    private readonly InfluxDBService _influxDBService;
+    private readonly IInfluxDBService _influxDBService;
     private readonly ILogger<KafkaConsumerService> _logger;
 
-    public KafkaConsumerService(AppConfig appConfig, InfluxDBService influxDBService, ILogger<KafkaConsumerService> logger)
+    public KafkaConsumerService(AppConfig appConfig, IInfluxDBService influxDBService, ILogger<KafkaConsumerService> logger)
     {
         _appConfig = appConfig;
         _influxDBService = influxDBService;
@@ -65,7 +65,16 @@ public class KafkaConsumerService : BackgroundService
 
                     _logger.LogDebug("Received message: {@Message}", message);
 
-                    var candleData = ParseCandleData(message);
+                    CandleData candleData;
+                    try
+                    {
+                        candleData = ParseCandleData(message);
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to parse candle data: {Message}", message);
+                        continue;
+                    }
                     await _influxDBService.WritePointAsync(candleData);
 
                     _logger.LogInformation("Written to InfluxDB: {ProductId} at {Start}", candleData.ProductId, candleData.Start);

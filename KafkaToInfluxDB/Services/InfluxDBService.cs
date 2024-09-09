@@ -32,7 +32,17 @@ public class InfluxDBService : IInfluxDBService, IDisposable
             HasToken = !string.IsNullOrEmpty(appConfig.InfluxDB.Token)
         });
 
-        _client = InfluxDBClientFactory.Create(appConfig.InfluxDB.Url, appConfig.InfluxDB.Token);
+        if (string.IsNullOrEmpty(appConfig.InfluxDB.Bucket))
+        {
+            throw new ArgumentNullException(nameof(appConfig.InfluxDB.Bucket), "InfluxDB Bucket cannot be null or empty");
+        }
+
+        if (string.IsNullOrEmpty(appConfig.InfluxDB.Org))
+        {
+            throw new ArgumentNullException(nameof(appConfig.InfluxDB.Org), "InfluxDB Org cannot be null or empty");
+        }
+
+        _client = new InfluxDBClient(appConfig.InfluxDB.Url, appConfig.InfluxDB.Token);
         _bucket = appConfig.InfluxDB.Bucket;
         _org = appConfig.InfluxDB.Org;
     }
@@ -79,8 +89,8 @@ public class InfluxDBService : IInfluxDBService, IDisposable
             if (bucket == null)
             {
                 _logger.LogInformation("Bucket '{Bucket}' not found. Creating it now...", _bucket);
-                var retention = new BucketRetentionRules(BucketRetentionRules.TypeEnum.Expire, 0);
-                await bucketsApi.CreateBucketAsync(_bucket, org.First().Id);
+                var retention = new BucketRetentionRules(BucketRetentionRules.TypeEnum.Expire, 30 * 24 * 60 * 60); // 30 days retention
+                await bucketsApi.CreateBucketAsync(_bucket, retention, org.First().Id);
                 _logger.LogInformation("Bucket '{Bucket}' created successfully.", _bucket);
             }
             else
