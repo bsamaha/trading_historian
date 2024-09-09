@@ -45,6 +45,7 @@ public class AppConfig
             config.Kafka.SecurityProtocol = GetEnvironmentVariable("KAFKA_SECURITY_PROTOCOL", logger) ?? config.Kafka.SecurityProtocol;
             config.Kafka.SaslMechanism = GetEnvironmentVariable("KAFKA_SASL_MECHANISM", logger) ?? config.Kafka.SaslMechanism;
             config.InfluxDB.Token = GetEnvironmentVariable("INFLUXDB_TOKEN", logger);
+            config.InfluxDB.Url = GetEnvironmentVariable("INFLUXDB_URL", logger) ?? config.InfluxDB.Url;
 
             ValidateConfiguration(config, logger);
             ValidateKafkaSecuritySettings(config.Kafka, logger);
