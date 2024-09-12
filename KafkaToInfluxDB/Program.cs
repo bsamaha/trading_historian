@@ -3,6 +3,9 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using KafkaToInfluxDB.Services;
 using KafkaToInfluxDB.Exceptions;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 
 namespace KafkaToInfluxDB;
 
@@ -12,20 +15,40 @@ public class Program
     {
         try
         {
-            var host = Host.CreateDefaultBuilder(args)
-                .ConfigureServices((hostContext, services) =>
-                {
-                    services.AddSingleton<ConfigurationService>();
-                    services.AddSingleton(sp => sp.GetRequiredService<ConfigurationService>().GetAppConfig());
-                    services.AddSingleton<IInfluxDBService, InfluxDBService>();
-                    services.AddHostedService<KafkaConsumerService>();
-                })
-                .Build();
+            var builder = WebApplication.CreateBuilder(args);
 
-            var influxDBService = host.Services.GetRequiredService<IInfluxDBService>();
-            await influxDBService.EnsureBucketExistsAsync();
+            // Add services to the container.
+            builder.Services.AddSingleton<ConfigurationService>();
+            builder.Services.AddSingleton(sp => sp.GetRequiredService<ConfigurationService>().GetAppConfig());
+            builder.Services.AddSingleton<IInfluxDBService, InfluxDBService>();
+            builder.Services.AddHostedService<KafkaConsumerService>();
 
-            await host.RunAsync();
+            var app = builder.Build();
+
+            // Configure the HTTP request pipeline.
+            app.UseRouting();
+
+            app.MapGet("/health", async context =>
+            {
+                context.Response.StatusCode = 200;
+                await context.Response.WriteAsync("Healthy");
+            });
+
+            app.MapGet("/ready", async context =>
+            {
+                context.Response.StatusCode = 200;
+                await context.Response.WriteAsync("Ready");
+            });
+
+            app.MapGet("/influxdb-health", async context =>
+            {
+                var influxDBService = context.RequestServices.GetRequiredService<IInfluxDBService>();
+                var isHealthy = await influxDBService.CheckHealthAsync();
+                context.Response.StatusCode = isHealthy ? 200 : 500;
+                await context.Response.WriteAsync(isHealthy ? "InfluxDB is healthy" : "InfluxDB is not healthy");
+            });
+
+            await app.RunAsync();
         }
         catch (Exception ex)
         {

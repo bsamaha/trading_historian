@@ -21,9 +21,10 @@ public class AppConfig
 
     public class InfluxDBConfig
     {
-        public string? Url { get; set; }
-        public string? Bucket { get; set; }
-        public string? Token { get; set; }
+        public string Url { get; set; } = "http://influxdb-influxdb2.default.svc.cluster.local:80";
+        public string Bucket { get; set; } = "default";
+        public string Token { get; set; } = "f09f13b863c83737cb5317220546afee3cf273fd042152d123c971342253a59e";
+        public string Org { get; set; } = "my-org";
     }
 
     public static AppConfig LoadConfig(ILogger<AppConfig> logger)
@@ -45,7 +46,8 @@ public class AppConfig
             {
                 Url = GetEnvironmentVariable("INFLUXDB_URL", logger),
                 Bucket = GetEnvironmentVariable("INFLUXDB_BUCKET", logger),
-                Token = GetEnvironmentVariable("INFLUXDB_TOKEN", logger)
+                Token = GetEnvironmentVariable("INFLUXDB_TOKEN", logger),
+                Org = GetEnvironmentVariable("INFLUXDB_ORG", logger)
             }
         };
 

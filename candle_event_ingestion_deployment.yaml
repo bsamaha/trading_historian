@@ -20,7 +20,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: kafka-user-passwords
-              key: client-passwords
+              key: admin-password
         - name: INFLUXDB_TOKEN
           valueFrom:
             secretKeyRef:
@@ -41,7 +41,7 @@ spec:
         - name: KAFKA_TOPIC
           value: "coinbase-candles"
         - name: INFLUXDB_URL
-          value: "http://influxdb-influxdb2:80"
+          value: "http://influxdb-influxdb2.default.svc.cluster.local:80"
         - name: INFLUXDB_BUCKET
           value: "crypto"
         - name: INFLUXDB_ORG

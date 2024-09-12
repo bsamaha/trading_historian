@@ -17,4 +17,9 @@ namespace KafkaToInfluxDB.Exceptions
     {
         public InfluxDBWriteException(string message, Exception innerException) : base(message, innerException) { }
     }
+
+    public class CircuitBreakerOpenException : KafkaToInfluxDBException
+    {
+        public CircuitBreakerOpenException(string message) : base(message) { }
+    }
 }

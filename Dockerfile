@@ -22,4 +22,7 @@ ENV ASPNETCORE_ENVIRONMENT=Production
 RUN adduser --disabled-password --gecos "" appuser
 USER appuser
 
+# Expose port 8080
+EXPOSE 8080
+
 ENTRYPOINT ["dotnet", "KafkaToInfluxDB.dll"]
