@@ -25,7 +25,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: influxdb-auth
-              key: admin-password
+              key: admin-token
         - name: ASPNETCORE_ENVIRONMENT
           value: Production
         - name: KAFKA_BOOTSTRAP_SERVERS

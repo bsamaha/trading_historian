@@ -18,7 +18,6 @@ public class InfluxDBService : IInfluxDBService, IDisposable
 {
     private readonly InfluxDBClient _client;
     private readonly string _bucket;
-    private readonly string _org;
     private readonly ILogger<InfluxDBService> _logger;
 
     public InfluxDBService(AppConfig appConfig, ILogger<InfluxDBService> logger)
@@ -28,7 +27,6 @@ public class InfluxDBService : IInfluxDBService, IDisposable
         {
             Url = appConfig.InfluxDB.Url,
             Bucket = appConfig.InfluxDB.Bucket,
-            Org = appConfig.InfluxDB.Org,
             HasToken = !string.IsNullOrEmpty(appConfig.InfluxDB.Token)
         });
 
@@ -37,14 +35,8 @@ public class InfluxDBService : IInfluxDBService, IDisposable
             throw new ArgumentNullException(nameof(appConfig.InfluxDB.Bucket), "InfluxDB Bucket cannot be null or empty");
         }
 
-        if (string.IsNullOrEmpty(appConfig.InfluxDB.Org))
-        {
-            throw new ArgumentNullException(nameof(appConfig.InfluxDB.Org), "InfluxDB Org cannot be null or empty");
-        }
-
         _client = new InfluxDBClient(appConfig.InfluxDB.Url, appConfig.InfluxDB.Token);
         _bucket = appConfig.InfluxDB.Bucket;
-        _org = appConfig.InfluxDB.Org;
     }
 
     public async Task WritePointAsync(CandleData candleData)
@@ -61,7 +53,7 @@ public class InfluxDBService : IInfluxDBService, IDisposable
         try
         {
             using var writeApi = _client.GetWriteApi();
-            await Task.Run(() => writeApi.WritePoint(point, _bucket, _org));
+            await Task.Run(() => writeApi.WritePoint(point, _bucket));
             _logger.LogDebug("Point written successfully: {@CandleData}", candleData);
         }
         catch (Exception ex)
@@ -76,26 +68,12 @@ public class InfluxDBService : IInfluxDBService, IDisposable
         try
         {
             _logger.LogInformation("Attempting to connect to InfluxDB");
-            _logger.LogInformation("Using organization: {Org}", _org);
             _logger.LogInformation("Using bucket: {Bucket}", _bucket);
 
             var bucketsApi = _client.GetBucketsApi();
             _logger.LogInformation("Successfully got BucketsApi");
 
-            var organizationsApi = _client.GetOrganizationsApi();
-            _logger.LogInformation("Successfully got OrganizationsApi");
-
-            // Try to find the organization
-            var org = await FindOrganizationAsync(organizationsApi);
-
-            if (org == null)
-            {
-                _logger.LogError("Unable to find or create organization '{Org}'. Please ensure it exists.", _org);
-                throw new InvalidOperationException($"Organization '{_org}' not found and cannot be created.");
-            }
-
-            // Try to find or create the bucket
-            await FindOrCreateBucketAsync(bucketsApi, org.Id);
+            await FindOrCreateBucketAsync(bucketsApi);
 
             _logger.LogInformation("Successfully connected to InfluxDB and verified bucket existence");
         }
@@ -106,27 +84,7 @@ public class InfluxDBService : IInfluxDBService, IDisposable
         }
     }
 
-    private async Task<Organization> FindOrganizationAsync(OrganizationsApi organizationsApi)
-    {
-        try
-        {
-            var orgs = await organizationsApi.FindOrganizationsAsync(org: _org);
-            if (orgs.Any())
-            {
-                _logger.LogInformation("Organization '{Org}' found", _org);
-                return orgs.First();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error finding organization '{Org}'", _org);
-        }
-
-        _logger.LogError("Organization '{Org}' not found. Please create it manually in InfluxDB.", _org);
-        throw new InvalidOperationException($"Organization '{_org}' not found. Please create it manually in InfluxDB.");
-    }
-
-    private async Task FindOrCreateBucketAsync(BucketsApi bucketsApi, string orgId)
+    private async Task FindOrCreateBucketAsync(BucketsApi bucketsApi)
     {
         try
         {
@@ -143,7 +101,12 @@ public class InfluxDBService : IInfluxDBService, IDisposable
         }
 
         var retention = new BucketRetentionRules(BucketRetentionRules.TypeEnum.Expire, 30 * 24 * 60 * 60); // 30 days retention
-        await bucketsApi.CreateBucketAsync(_bucket, retention, orgId);
+        var bucketRequest = new PostBucketRequest(
+            orgID: (await _client.GetOrganizationsApi().FindOrganizationsAsync()).First().Id,
+            name: _bucket,
+            retentionRules: new List<BucketRetentionRules> { retention }
+        );
+        await bucketsApi.CreateBucketAsync(bucketRequest);
         _logger.LogInformation("Bucket '{Bucket}' created successfully", _bucket);
     }
 

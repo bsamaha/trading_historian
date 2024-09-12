@@ -14,7 +14,6 @@ RUN dotnet publish -c Release -o out
 FROM mcr.microsoft.com/dotnet/aspnet:7.0
 WORKDIR /app
 COPY --from=build-env /app/out .
-COPY appsettings.json .
 
 # Set the environment variable for running in production
 ENV ASPNETCORE_ENVIRONMENT=Production

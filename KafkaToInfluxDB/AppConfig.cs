@@ -23,7 +23,6 @@ public class AppConfig
     {
         public string? Url { get; set; }
         public string? Bucket { get; set; }
-        public string? Org { get; set; }
         public string? Token { get; set; }
     }
 
@@ -46,7 +45,6 @@ public class AppConfig
             {
                 Url = GetEnvironmentVariable("INFLUXDB_URL", logger),
                 Bucket = GetEnvironmentVariable("INFLUXDB_BUCKET", logger),
-                Org = GetEnvironmentVariable("INFLUXDB_ORG", logger),
                 Token = GetEnvironmentVariable("INFLUXDB_TOKEN", logger)
             }
         };
@@ -90,11 +88,6 @@ public class AppConfig
         if (string.IsNullOrEmpty(config.InfluxDB.Bucket))
         {
             throw new InvalidOperationException("InfluxDB Bucket is not configured");
-        }
-
-        if (string.IsNullOrEmpty(config.InfluxDB.Org))
-        {
-            throw new InvalidOperationException("InfluxDB Org is not configured");
         }
 
         logger.LogInformation("Configuration validation completed successfully");
