@@ -20,7 +20,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: kafka-user-passwords
-              key: admin-password
+              key: client-passwords
         - name: INFLUXDB_TOKEN
           valueFrom:
             secretKeyRef:
