@@ -39,9 +39,9 @@ spec:
         - name: KAFKA_GROUP_ID
           value: "candle-event-ingestion-consumer"
         - name: KAFKA_TOPIC
-          value: "candles"
+          value: "coinbase-candles"
         - name: INFLUXDB_URL
-          value: "http://influxdb:8086"
+          value: "http://influxdb-influxdb2:80"
         - name: INFLUXDB_BUCKET
           value: "crypto"
         - name: INFLUXDB_ORG
