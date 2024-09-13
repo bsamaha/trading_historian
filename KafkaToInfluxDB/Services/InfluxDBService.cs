@@ -1,216 +1,127 @@
 using InfluxDB.Client;
 using InfluxDB.Client.Api.Domain;
 using InfluxDB.Client.Writes;
-using KafkaToInfluxDB.Models;
 using Microsoft.Extensions.Logging;
-using KafkaToInfluxDB.Exceptions;
-using InfluxDB.Client.Core.Exceptions;
 using System.Threading;
-using System.Threading.Tasks;
+using KafkaToInfluxDB.Services;
 
-namespace KafkaToInfluxDB.Services;
-
-public interface IInfluxDBService
-{
-    Task WritePointAsync(CandleData candleData);
-    Task EnsureBucketExistsAsync();
-    Task<bool> CheckHealthAsync();
-}
-
-public class InfluxDBService : IInfluxDBService, IDisposable
+public class InfluxDBService : IInfluxDBService, IAsyncDisposable
 {
     private readonly InfluxDBClient _client;
-    private readonly string _bucket;
+    private readonly WriteApiAsync _writeApiAsync;
     private readonly string _org;
+    private readonly string _bucket;
     private readonly ILogger<InfluxDBService> _logger;
-    private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
-    private readonly CircuitBreaker _circuitBreaker;
 
     public InfluxDBService(AppConfig appConfig, ILogger<InfluxDBService> logger)
     {
         _logger = logger;
+        _org = appConfig.InfluxDB.Org ?? "mytestorg";
+        _bucket = appConfig.InfluxDB.Bucket ?? "mytestbucket";
+
         _logger.LogInformation("Initializing InfluxDBService with configuration: {@InfluxDBConfig}", new
         {
             Url = appConfig.InfluxDB.Url,
-            Bucket = appConfig.InfluxDB.Bucket,
-            Org = appConfig.InfluxDB.Org,
+            Org = _org,
+            Bucket = _bucket,
             HasToken = !string.IsNullOrEmpty(appConfig.InfluxDB.Token)
         });
 
-        if (string.IsNullOrEmpty(appConfig.InfluxDB.Bucket))
-        {
-            throw new ArgumentNullException(nameof(appConfig.InfluxDB.Bucket), "InfluxDB Bucket cannot be null or empty");
-        }
-
-        if (string.IsNullOrEmpty(appConfig.InfluxDB.Org))
-        {
-            throw new ArgumentNullException(nameof(appConfig.InfluxDB.Org), "InfluxDB Org cannot be null or empty");
-        }
-
         if (string.IsNullOrEmpty(appConfig.InfluxDB.Token))
         {
-            throw new ArgumentNullException(nameof(appConfig.InfluxDB.Token), "InfluxDB Token cannot be null or empty");
+            throw new ArgumentNullException(nameof(appConfig.InfluxDB.Token), "InfluxDB Token is not configured");
         }
-
-        _logger.LogInformation("Attempting to connect to InfluxDB at URL: {Url}", appConfig.InfluxDB.Url);
 
         var options = InfluxDBClientOptions.Builder
             .CreateNew()
             .Url(appConfig.InfluxDB.Url)
             .AuthenticateToken(appConfig.InfluxDB.Token.ToCharArray())
-            .Org(appConfig.InfluxDB.Org)
-            .Bucket(appConfig.InfluxDB.Bucket)
+            .Org(_org)
             .Build();
 
         _client = new InfluxDBClient(options);
-        _bucket = appConfig.InfluxDB.Bucket;
-        _org = appConfig.InfluxDB.Org;
-        _circuitBreaker = new CircuitBreaker(3, TimeSpan.FromSeconds(30));
+        _writeApiAsync = _client.GetWriteApiAsync();
+        _logger.LogInformation("InfluxDB client and WriteApiAsync initialized successfully");
     }
 
-    public async Task WritePointAsync(CandleData candleData)
-    {
-        var point = PointData.Measurement("candles")
-            .Tag("product_id", candleData.ProductId)
-            .Field("high", candleData.High)
-            .Field("low", candleData.Low)
-            .Field("open", candleData.Open)
-            .Field("close", candleData.Close)
-            .Field("volume", candleData.Volume)
-            .Timestamp(DateTimeOffset.FromUnixTimeSeconds(candleData.Start).UtcDateTime, WritePrecision.Ns);
-
-        await _circuitBreaker.ExecuteAsync(async () =>
-        {
-            await RetryAsync(async () =>
-            {
-                await _semaphore.WaitAsync();
-                try
-                {
-                    using var writeApi = _client.GetWriteApi();
-                    _logger.LogInformation("Attempting to write point: {@Point}", point);
-                    await Task.Run(() => writeApi.WritePoint(point, _bucket, _org));
-                    _logger.LogInformation("Point written successfully: {@CandleData}", candleData);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error writing point to InfluxDB: {@Point}", point);
-                    throw;
-                }
-                finally
-                {
-                    _semaphore.Release();
-                }
-            });
-        });
-    }
-
-    private async Task RetryAsync(Func<Task> action, int maxRetries = 3)
-    {
-        Exception? lastException = null;
-        for (int i = 0; i < maxRetries; i++)
-        {
-            try
-            {
-                await action();
-                return;
-            }
-            catch (Exception ex)
-            {
-                lastException = ex;
-                if (i < maxRetries - 1)
-                {
-                    _logger.LogWarning(ex, "Error writing point to InfluxDB. Retry attempt {Attempt} of {MaxRetries}", i + 1, maxRetries);
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, i))); // Exponential backoff
-                }
-            }
-        }
-        throw new InfluxDBWriteException($"Failed to write point after {maxRetries} attempts", lastException ?? new Exception("Unknown error"));
-    }
-
-    public async Task EnsureBucketExistsAsync()
+    public async Task EnsureOrganizationAndBucketExistAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            _logger.LogInformation("Attempting to connect to InfluxDB");
-            _logger.LogInformation("Using bucket: {Bucket}", _bucket);
+            // Ensure Organization exists
+            var orgsApi = _client.GetOrganizationsApi();
+            var existingOrg = (await orgsApi.FindOrganizationsAsync(org: _org, cancellationToken: cancellationToken)).FirstOrDefault();
+            if (existingOrg == null)
+            {
+                _logger.LogInformation("Organization '{Org}' does not exist. Creating...", _org);
+                existingOrg = await orgsApi.CreateOrganizationAsync(_org, cancellationToken);
+                _logger.LogInformation("Organization '{Org}' created with ID: {Id}", existingOrg.Name, existingOrg.Id);
+            }
+            else
+            {
+                _logger.LogInformation("Organization '{Org}' exists with ID: {Id}", existingOrg.Name, existingOrg.Id);
+            }
 
+            // Ensure Bucket exists
             var bucketsApi = _client.GetBucketsApi();
-            _logger.LogInformation("Successfully got BucketsApi");
-
-            await ListOrganizationsAsync();
-            await FindOrCreateOrganizationAsync();
-            await ListOrganizationsAsync(); // List organizations again after potential creation
-            await FindOrCreateBucketAsync(bucketsApi);
-
-            _logger.LogInformation("Successfully connected to InfluxDB and verified bucket existence");
+            var existingBucket = await bucketsApi.FindBucketByNameAsync(_bucket, cancellationToken);
+            if (existingBucket == null)
+            {
+                _logger.LogInformation("Bucket '{Bucket}' does not exist. Creating...", _bucket);
+                var retention = new BucketRetentionRules(BucketRetentionRules.TypeEnum.Expire, 0); // Infinite retention
+                var bucketRequest = new Bucket(
+                    name: _bucket,
+                    retentionRules: new List<BucketRetentionRules> { retention },
+                    orgID: existingOrg.Id
+                );
+                existingBucket = await bucketsApi.CreateBucketAsync(bucketRequest, cancellationToken);
+                _logger.LogInformation("Bucket '{Bucket}' created with ID: {Id}", existingBucket.Name, existingBucket.Id);
+            }
+            else
+            {
+                _logger.LogInformation("Bucket '{Bucket}' exists with ID: {Id}", existingBucket.Name, existingBucket.Id);
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error ensuring bucket exists or connecting to InfluxDB. Exception type: {ExceptionType}", ex.GetType().Name);
+            _logger.LogError(ex, "Error ensuring organization and bucket exist");
             throw;
         }
     }
 
-    private async Task ListOrganizationsAsync()
-    {
-        var organizationsApi = _client.GetOrganizationsApi();
-        var organizations = await organizationsApi.FindOrganizationsAsync();
-        _logger.LogInformation("Listed organizations:");
-        foreach (var org in organizations)
-        {
-            _logger.LogInformation("Organization: Name = {Name}, ID = {Id}, Created = {Created}", org.Name, org.Id, org.CreatedAt);
-        }
-    }
-
-    private async Task FindOrCreateOrganizationAsync()
-    {
-        var organizationsApi = _client.GetOrganizationsApi();
-        var organizations = await organizationsApi.FindOrganizationsAsync(org: _org);
-
-        if (organizations.Count == 0)
-        {
-            _logger.LogInformation("Organization {Org} not found. Creating new organization.", _org);
-            var newOrg = await organizationsApi.CreateOrganizationAsync(_org);
-            _logger.LogInformation("Created new organization: {OrgId}", newOrg.Id);
-        }
-        else
-        {
-            var organization = organizations.First();
-            _logger.LogInformation("Organization {Org} found with ID: {OrgId}", _org, organization.Id);
-        }
-    }
-    private async Task FindOrCreateBucketAsync(BucketsApi bucketsApi)
+    public async Task WriteRandomDataPointAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            var bucket = await bucketsApi.FindBucketByNameAsync(_bucket);
-            if (bucket != null)
-            {
-                _logger.LogInformation("Bucket '{Bucket}' already exists", _bucket);
-                return;
-            }
-        }
-        catch (NotFoundException)
-        {
-            _logger.LogInformation("Bucket '{Bucket}' not found, creating it now...", _bucket);
-        }
+            var point = PointData.Measurement("random_measurement")
+                .Tag("host", "host1")
+                .Field("value", Random.Shared.NextDouble())
+                .Timestamp(DateTime.UtcNow, WritePrecision.Ns);
 
-        var retention = new BucketRetentionRules(BucketRetentionRules.TypeEnum.Expire, 30 * 24 * 60 * 60); // 30 days retention
-        var bucketRequest = new PostBucketRequest(
-            orgID: (await _client.GetOrganizationsApi().FindOrganizationsAsync()).First().Id,
-            name: _bucket,
-            retentionRules: new List<BucketRetentionRules> { retention }
-        );
-        await bucketsApi.CreateBucketAsync(bucketRequest);
-        _logger.LogInformation("Bucket '{Bucket}' created successfully", _bucket);
+            await _writeApiAsync.WritePointAsync(point, _bucket, _org, cancellationToken);
+            _logger.LogInformation("Wrote random data point to bucket '{Bucket}'", _bucket);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error writing data point to InfluxDB");
+            throw;
+        }
     }
 
-    public async Task<bool> CheckHealthAsync()
+    public async Task<bool> CheckHealthAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            var ping = await _client.PingAsync();
-            return ping;
+            // Use the cancellationToken to create a timeout
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(5)); // 5 seconds timeout
+
+            return await _client.PingAsync().WaitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("InfluxDB health check timed out");
+            return false;
         }
         catch (Exception ex)
         {
@@ -222,58 +133,17 @@ public class InfluxDBService : IInfluxDBService, IDisposable
     public void Dispose()
     {
         _client?.Dispose();
-        _semaphore?.Dispose();
     }
-}
 
-public class CircuitBreaker
-{
-    private readonly int _failureThreshold;
-    private readonly TimeSpan _resetTimeout;
-    private int _failureCount;
-    private DateTime _lastFailureTime;
-    private bool _isOpen;
-
-    public CircuitBreaker(int failureThreshold, TimeSpan resetTimeout)
+    public async ValueTask DisposeAsync()
     {
-        _failureThreshold = failureThreshold;
-        _resetTimeout = resetTimeout;
-    }
-
-    public async Task ExecuteAsync(Func<Task> action)
-    {
-        if (_isOpen)
+        if (_client is IAsyncDisposable asyncDisposable)
         {
-            if (DateTime.UtcNow - _lastFailureTime > _resetTimeout)
-            {
-                _isOpen = false;
-                _failureCount = 0;
-            }
-            else
-            {
-                throw new CircuitBreakerOpenException("Circuit is open");
-            }
+            await asyncDisposable.DisposeAsync();
         }
-
-        try
+        else
         {
-            await action();
-            _failureCount = 0;
-        }
-        catch (Exception)
-        {
-            _failureCount++;
-            _lastFailureTime = DateTime.UtcNow;
-            if (_failureCount >= _failureThreshold)
-            {
-                _isOpen = true;
-            }
-            throw;
+            _client?.Dispose();
         }
     }
-}
-
-public class CircuitBreakerOpenException : Exception
-{
-    public CircuitBreakerOpenException(string message) : base(message) { }
 }

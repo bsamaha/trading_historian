@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Confluent.Kafka;
 
-namespace KafkaToInfluxDB;
+namespace KafkaToInfluxDB.Services;
 
 public class AppConfig
 {
@@ -21,10 +21,10 @@ public class AppConfig
 
     public class InfluxDBConfig
     {
-        public string Url { get; set; } = "http://influxdb-influxdb2.default.svc.cluster.local:80";
-        public string Bucket { get; set; } = "default";
-        public string Token { get; set; } = "f09f13b863c83737cb5317220546afee3cf273fd042152d123c971342253a59e";
-        public string Org { get; set; } = "my-org";
+        public string? Url { get; set; }
+        public string? Org { get; set; }
+        public string? Token { get; set; }
+        public string? Bucket { get; set; }
     }
 
     public static AppConfig LoadConfig(ILogger<AppConfig> logger)
@@ -45,9 +45,9 @@ public class AppConfig
             InfluxDB = new InfluxDBConfig
             {
                 Url = GetEnvironmentVariable("INFLUXDB_URL", logger),
-                Bucket = GetEnvironmentVariable("INFLUXDB_BUCKET", logger),
+                Org = GetEnvironmentVariable("INFLUXDB_ORG", logger),
                 Token = GetEnvironmentVariable("INFLUXDB_TOKEN", logger),
-                Org = GetEnvironmentVariable("INFLUXDB_ORG", logger)
+                Bucket = GetEnvironmentVariable("INFLUXDB_BUCKET", logger)
             }
         };
 
@@ -85,6 +85,16 @@ public class AppConfig
         if (string.IsNullOrEmpty(config.InfluxDB.Url))
         {
             throw new InvalidOperationException("InfluxDB Url is not configured");
+        }
+
+        if (string.IsNullOrEmpty(config.InfluxDB.Org))
+        {
+            throw new InvalidOperationException("InfluxDB Org is not configured");
+        }
+
+        if (string.IsNullOrEmpty(config.InfluxDB.Token))
+        {
+            throw new InvalidOperationException("InfluxDB Token is not configured");
         }
 
         if (string.IsNullOrEmpty(config.InfluxDB.Bucket))
