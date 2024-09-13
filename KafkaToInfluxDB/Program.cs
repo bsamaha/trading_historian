@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Threading.Tasks;
+using System;
 
 namespace KafkaToInfluxDB;
 
@@ -42,7 +44,14 @@ public class Program
                 await context.Response.WriteAsync(isReady ? "Ready" : "Not Ready");
             });
 
-            await app.RunAsync();
+            // Start the application
+            await app.StartAsync();
+
+            // Allow some time for services to initialize
+            await Task.Delay(TimeSpan.FromSeconds(5));
+
+            // Run the application and wait for it to stop
+            await app.WaitForShutdownAsync();
         }
         catch (Exception ex)
         {
