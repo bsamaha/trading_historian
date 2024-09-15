@@ -12,6 +12,7 @@ spec:
       labels:
         app: candle-event-ingestion
     spec:
+      terminationGracePeriodSeconds: 60
       containers:
       - name: candle-event-ingestion
         image: bsamaha/candle-event-ingestion:latest
@@ -46,13 +47,21 @@ spec:
           value: "crypto"
         - name: INFLUXDB_ORG
           value: "epochtech"
+        - name: INFLUXDB_MAX_RETRIES
+          value: "3"
+        - name: INFLUXDB_BASE_DELAY_MS
+          value: "1000"
+        - name: CIRCUIT_BREAKER_FAILURE_THRESHOLD
+          value: "5"
+        - name: CIRCUIT_BREAKER_BREAK_DURATION_SECONDS
+          value: "30"
         resources:
           requests:
-            cpu: "200m"
-            memory: "256Mi"
+            cpu: "400m"
+            memory: "1024Mi"
           limits:
-            cpu: "500m"
-            memory: "512Mi"
+            cpu: "1000m"
+            memory: "2Gi"
         livenessProbe:
           httpGet:
             path: /health
@@ -65,3 +74,7 @@ spec:
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 5"]

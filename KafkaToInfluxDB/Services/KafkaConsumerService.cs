@@ -1,151 +1,101 @@
 using Confluent.Kafka;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Newtonsoft.Json.Linq;
 using KafkaToInfluxDB.Models;
 using KafkaToInfluxDB.Exceptions;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using KafkaToInfluxDB.Services;
 
 namespace KafkaToInfluxDB.Services;
 
 public class KafkaConsumerService : BackgroundService
 {
-    private readonly AppConfig _appConfig;
     private readonly ILogger<KafkaConsumerService> _logger;
-    private IConsumer<string, string>? _consumer;
+    private readonly IInfluxDBService _influxDbService;
+    private readonly IConsumer<Ignore, string> _consumer;
+    private readonly AppConfig _appConfig;
+    private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 
-    public KafkaConsumerService(AppConfig appConfig, ILogger<KafkaConsumerService> logger)
+    public KafkaConsumerService(
+        ILogger<KafkaConsumerService> logger,
+        IInfluxDBService influxDbService,
+        IConsumer<Ignore, string> consumer,
+        AppConfig appConfig)
     {
-        _appConfig = appConfig;
         _logger = logger;
-    }
-
-    public override void Dispose()
-    {
-        _consumer?.Dispose();
-        base.Dispose();
+        _influxDbService = influxDbService;
+        _consumer = consumer;
+        _appConfig = appConfig;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Starting KafkaConsumerService with configuration: {@KafkaConfig}", new
-        {
-            BootstrapServers = _appConfig.Kafka.BootstrapServers,
-            GroupId = _appConfig.Kafka.GroupId,
-            Topic = _appConfig.Kafka.Topic,
-            Username = _appConfig.Kafka.Username,
-            HasPassword = !string.IsNullOrEmpty(_appConfig.Kafka.Password)
-        });
-
-        var config = new ConsumerConfig
-        {
-            BootstrapServers = _appConfig.Kafka.BootstrapServers,
-            GroupId = _appConfig.Kafka.GroupId,
-            AutoOffsetReset = AutoOffsetReset.Earliest,
-            SecurityProtocol = SecurityProtocol.SaslPlaintext,
-            SaslMechanism = SaslMechanism.ScramSha256,
-            SaslUsername = _appConfig.Kafka.Username,
-            SaslPassword = _appConfig.Kafka.Password,
-            EnableAutoCommit = false
-        };
+        _logger.LogInformation("KafkaConsumerService is starting.");
+        _consumer.Subscribe(_appConfig.Kafka.Topic);
 
         try
         {
-            using (_consumer = new ConsumerBuilder<string, string>(config).Build())
+            while (!stoppingToken.IsCancellationRequested)
             {
-                _consumer.Subscribe(_appConfig.Kafka.Topic);
-                _logger.LogInformation("Successfully connected to Kafka and subscribed to topic: {Topic}", _appConfig.Kafka.Topic);
-
-                while (!stoppingToken.IsCancellationRequested)
+                try
                 {
-                    try
+                    var consumeResult = _consumer.Consume(TimeSpan.FromSeconds(1));
+                    if (consumeResult != null)
                     {
-                        var consumeResult = _consumer.Consume(TimeSpan.FromSeconds(1));
-
-                        if (consumeResult == null)
-                        {
-                            continue;
-                        }
-
-                        _logger.LogDebug("Message consumed successfully. Offset: {Offset}", consumeResult.Offset);
-
-                        var message = consumeResult.Message.Value;
-                        _logger.LogDebug("Received message: {@Message}", message);
-
-                        CandleData candleData = ParseCandleData(message);
-                        PrintCandleData(candleData);
-
+                        _logger.LogInformation("Received message: {Message}", consumeResult.Message.Value);
+                        var candleData = CandleData.ParseCandleData(consumeResult.Message.Value);
+                        await _influxDbService.WriteDataAsync(
+                            "candle_data",
+                            new Dictionary<string, object>
+                            {
+                                { "open", candleData.Open },
+                                { "high", candleData.High },
+                                { "low", candleData.Low },
+                                { "close", candleData.Close },
+                                { "volume", candleData.Volume }
+                            },
+                            new Dictionary<string, string>
+                            {
+                                { "product_id", candleData.ProductId ?? "unknown" }
+                            },
+                            _cts.Token
+                        );
                         _consumer.Commit(consumeResult);
-                        _logger.LogDebug("Committed offset: {Offset}", consumeResult.Offset);
+                        _logger.LogInformation("Processed and wrote data to InfluxDB");
                     }
-                    catch (ConsumeException ex)
-                    {
-                        _logger.LogError(ex, "Error consuming message");
-                        await Task.Delay(5000, stoppingToken);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        break; // Exit the loop when cancellation is requested
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "An unexpected error occurred while consuming messages");
-                        await Task.Delay(5000, stoppingToken);
-                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("Consume operation canceled, shutting down.");
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing Kafka message");
                 }
             }
         }
-        catch (OperationCanceledException)
-        {
-            // This is expected during shutdown, so we can ignore it
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to connect to Kafka or subscribe to topic");
-            throw;
-        }
         finally
         {
-            _logger.LogInformation("KafkaConsumerService is shutting down");
+            _logger.LogInformation("KafkaConsumerService is stopping. Closing consumer...");
+            _consumer.Close();
         }
+
+        _logger.LogInformation("KafkaConsumerService has stopped.");
     }
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    public override async Task StopAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Stopping KafkaConsumerService");
-        _consumer?.Close();
+        _logger.LogInformation("KafkaConsumerService is stopping.");
+        _cts.Cancel();
+        await base.StopAsync(stoppingToken);
+    }
+
+    public override void Dispose()
+    {
+        _cts.Dispose();
         _consumer?.Dispose();
-        await base.StopAsync(cancellationToken);
-        _logger.LogInformation("KafkaConsumerService has been stopped");
-    }
-
-    private static CandleData ParseCandleData(string message)
-    {
-        var jsonObject = JObject.Parse(message);
-        var candles = jsonObject["events"]?[0]?["candles"]?[0];
-
-        if (candles == null)
-        {
-            throw new ArgumentException("Invalid message format", nameof(message));
-        }
-
-        return new CandleData
-        {
-            Start = candles["start"]?.ToObject<long>() ?? throw new ArgumentException("Invalid start value"),
-            High = candles["high"]?.ToObject<decimal>() ?? throw new ArgumentException("Invalid high value"),
-            Low = candles["low"]?.ToObject<decimal>() ?? throw new ArgumentException("Invalid low value"),
-            Open = candles["open"]?.ToObject<decimal>() ?? throw new ArgumentException("Invalid open value"),
-            Close = candles["close"]?.ToObject<decimal>() ?? throw new ArgumentException("Invalid close value"),
-            Volume = candles["volume"]?.ToObject<decimal>() ?? throw new ArgumentException("Invalid volume value"),
-            ProductId = candles["product_id"]?.ToString() ?? throw new ArgumentException("Invalid product_id value")
-        };
-    }
-
-    private static void PrintCandleData(CandleData candleData)
-    {
-        Console.WriteLine($"Start: {candleData.Start}, High: {candleData.High}, Low: {candleData.Low}, Open: {candleData.Open}, Close: {candleData.Close}, Volume: {candleData.Volume}, ProductId: {candleData.ProductId}");
+        base.Dispose();
     }
 }

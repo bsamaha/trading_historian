@@ -1,64 +1,162 @@
+using KafkaToInfluxDB.HealthChecks;
 using KafkaToInfluxDB.Services;
-using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using System.Threading.Tasks;
+using Confluent.Kafka;
 using System;
 
 namespace KafkaToInfluxDB;
 
 public class Program
 {
-    public static async Task Main(string[] args)
+    public static void Main(string[] args)
     {
-        try
-        {
-            var builder = WebApplication.CreateBuilder(args);
+        CreateHostBuilder(args).Build().Run();
+    }
 
-            // Add services to the container.
-            builder.Services.AddSingleton<ConfigurationService>();
-            builder.Services.AddSingleton(sp => sp.GetRequiredService<ConfigurationService>().GetAppConfig());
-            builder.Services.AddSingleton<IInfluxDBService, InfluxDBService>();
-            builder.Services.AddHostedService<KafkaConsumerService>();
-            builder.Services.AddHostedService<DataGeneratorService>();
-
-            var app = builder.Build();
-
-            // Configure the HTTP request pipeline.
-            app.UseRouting();
-
-            app.MapGet("/health", async context =>
+    public static IHostBuilder CreateHostBuilder(string[] args) =>
+        Host.CreateDefaultBuilder(args)
+            .ConfigureWebHostDefaults(webBuilder =>
             {
-                var influxDBService = context.RequestServices.GetRequiredService<IInfluxDBService>();
-                var isHealthy = await influxDBService.CheckHealthAsync();
-                context.Response.StatusCode = isHealthy ? 200 : 503;
-                await context.Response.WriteAsync(isHealthy ? "Healthy" : "Unhealthy");
-            });
-
-            app.MapGet("/ready", async context =>
+                webBuilder.UseKestrel(options =>
+                {
+                    options.ListenAnyIP(8080);
+                });
+            })
+            .ConfigureServices((hostContext, services) =>
             {
-                var influxDBService = context.RequestServices.GetRequiredService<IInfluxDBService>();
-                var isReady = await influxDBService.CheckHealthAsync();
-                context.Response.StatusCode = isReady ? 200 : 503;
-                await context.Response.WriteAsync(isReady ? "Ready" : "Not Ready");
+                services.AddSingleton<ConfigurationService>();
+                services.AddSingleton(sp => sp.GetRequiredService<ConfigurationService>().GetAppConfig());
+                services.AddSingleton<IInfluxDBService, InfluxDBService>();
+                services.AddSingleton<IConsumer<Ignore, string>>(sp =>
+                {
+                    var appConfig = sp.GetRequiredService<AppConfig>();
+                    var config = new ConsumerConfig
+                    {
+                        BootstrapServers = appConfig.Kafka.BootstrapServers,
+                        GroupId = appConfig.Kafka.GroupId,
+                        AutoOffsetReset = AutoOffsetReset.Latest,
+                        EnableAutoCommit = false
+                    };
+
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.SecurityProtocol))
+                    {
+                        config.SecurityProtocol = Enum.Parse<SecurityProtocol>(appConfig.Kafka.SecurityProtocol);
+                    }
+
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.SaslMechanism))
+                    {
+                        config.SaslMechanism = Enum.Parse<SaslMechanism>(appConfig.Kafka.SaslMechanism);
+                    }
+
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.Username))
+                    {
+                        config.SaslUsername = appConfig.Kafka.Username;
+                    }
+
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.Password))
+                    {
+                        config.SaslPassword = appConfig.Kafka.Password;
+                    }
+
+                    return new ConsumerBuilder<Ignore, string>(config).Build();
+                });
+
+                services.AddHostedService<KafkaConsumerService>();
+                services.AddHostedService<DataGeneratorService>();
+                services.AddHostedService<GracefulShutdownService>();
+
+                services.AddLogging(builder =>
+                {
+                    builder.AddConfiguration(hostContext.Configuration.GetSection("Logging"));
+                    builder.AddConsole();
+                    builder.SetMinimumLevel(LogLevel.Information);
+                });
+
+                services.AddHealthChecks()
+                    .AddCheck<KafkaHealthCheck>("kafka_health_check")
+                    .AddCheck<InfluxDBHealthCheck>("influxdb_health_check");
+
+                services.AddControllers();
+
+                services.AddSingleton<IAdminClient>(sp =>
+                {
+                    var appConfig = sp.GetRequiredService<AppConfig>();
+                    var config = new AdminClientConfig
+                    {
+                        BootstrapServers = appConfig.Kafka.BootstrapServers
+                    };
+
+                    // Add any additional configuration (like security settings) here
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.SecurityProtocol))
+                    {
+                        config.SecurityProtocol = Enum.Parse<SecurityProtocol>(appConfig.Kafka.SecurityProtocol);
+                    }
+
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.SaslMechanism))
+                    {
+                        config.SaslMechanism = Enum.Parse<SaslMechanism>(appConfig.Kafka.SaslMechanism);
+                    }
+
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.Username))
+                    {
+                        config.SaslUsername = appConfig.Kafka.Username;
+                    }
+
+                    if (!string.IsNullOrEmpty(appConfig.Kafka.Password))
+                    {
+                        config.SaslPassword = appConfig.Kafka.Password;
+                    }
+
+                    return new AdminClientBuilder(config).Build();
+                });
             });
+}
 
-            // Start the application
-            await app.StartAsync();
+public class GracefulShutdownService : IHostedService
+{
+    private readonly IHostApplicationLifetime _appLifetime;
+    private readonly ILogger<GracefulShutdownService> _logger;
 
-            // Allow some time for services to initialize
-            await Task.Delay(TimeSpan.FromSeconds(5));
+    public GracefulShutdownService(
+        IHostApplicationLifetime appLifetime,
+        ILogger<GracefulShutdownService> logger)
+    {
+        _appLifetime = appLifetime;
+        _logger = logger;
+    }
 
-            // Run the application and wait for it to stop
-            await app.WaitForShutdownAsync();
-        }
-        catch (Exception ex)
-        {
-            var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
-            var logger = loggerFactory.CreateLogger<Program>();
-            logger.LogCritical(ex, "An unhandled exception occurred during startup");
-            throw;
-        }
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _appLifetime.ApplicationStarted.Register(OnStarted);
+        _appLifetime.ApplicationStopping.Register(OnStopping);
+        _appLifetime.ApplicationStopped.Register(OnStopped);
+
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+
+    private void OnStarted()
+    {
+        _logger.LogInformation("Application started. Press Ctrl+C to shut down.");
+    }
+
+    private void OnStopping()
+    {
+        _logger.LogInformation("Application is shutting down...");
+        // Add a delay to allow in-flight operations to complete
+        Task.Delay(TimeSpan.FromSeconds(5)).Wait();
+        _logger.LogInformation("Shutdown delay completed.");
+    }
+
+    private void OnStopped()
+    {
+        _logger.LogInformation("Application has stopped.");
     }
 }
