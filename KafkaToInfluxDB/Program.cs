@@ -15,6 +15,12 @@ public class Program
 
     public static IHostBuilder CreateHostBuilder(string[] args) =>
         Host.CreateDefaultBuilder(args)
+            .ConfigureLogging((hostingContext, logging) =>
+            {
+                logging.ClearProviders();
+                logging.AddConfiguration(hostingContext.Configuration.GetSection("Logging"));
+                logging.AddConsole();
+            })
             .ConfigureWebHostDefaults(webBuilder =>
             {
                 webBuilder.UseKestrel(options =>
@@ -41,6 +47,7 @@ public class Program
             {
                 services.Configure<AppConfig>(hostContext.Configuration.GetSection("AppConfig"));
                 services.AddSingleton<IInfluxDBService, InfluxDBService>();
+                services.AddSingleton<ICandleDataParser, CandleDataParser>();
                 services.AddSingleton<IConsumer<Ignore, string>>(sp =>
                 {
                     var appConfig = sp.GetRequiredService<IOptions<AppConfig>>().Value;
@@ -77,13 +84,6 @@ public class Program
 
                 services.AddHostedService<KafkaConsumerService>();
                 services.AddHostedService<GracefulShutdownService>();
-
-                services.AddLogging(builder =>
-                {
-                    builder.AddConfiguration(hostContext.Configuration.GetSection("Logging"));
-                    builder.AddConsole();
-                    builder.SetMinimumLevel(LogLevel.Information);
-                });
 
                 services.AddHealthChecks()
                     .AddCheck<KafkaHealthCheck>("kafka_health_check", tags: new[] { "ready" })
@@ -122,7 +122,17 @@ public class Program
 
                     return new AdminClientBuilder(config).Build();
                 });
+
+                services.AddSingleton<ConfigurationService>();
+                services.AddSingleton(sp => sp.GetRequiredService<ConfigurationService>().GetAppConfig());
+                services.AddSingleton<ICandleDataParser, CandleDataParser>();
+                services.AddSingleton<IDataWriter, InfluxDBDataWriter>();
             });
+}
+
+public class LoggingOptions
+{
+    public LogLevel MinimumLevel { get; set; } = LogLevel.Information;
 }
 
 public class GracefulShutdownService : IHostedService

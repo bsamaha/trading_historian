@@ -42,10 +42,14 @@ public class InfluxDBDataWriter : IDataWriter, IDisposable
             return;
         }
 
+        _logger.LogInformation("Queueing data - Measurement: {Measurement}, Fields: {@Fields}, Tags: {@Tags}", measurement, fields, tags);
         _queue.Enqueue((measurement, fields, tags));
+
+        _logger.LogInformation("Current queue size: {QueueSize}", _queue.Count);
 
         if (_queue.Count >= _batchSize)
         {
+            _logger.LogInformation("Queue reached batch size. Triggering flush.");
             await FlushAsync(cancellationToken);
         }
     }
@@ -61,15 +65,23 @@ public class InfluxDBDataWriter : IDataWriter, IDisposable
         {
             try
             {
+                _logger.LogInformation("Starting flush operation");
                 var batchToWrite = new List<(string, Dictionary<string, object>, Dictionary<string, string>)>();
                 while (batchToWrite.Count < _batchSize && _queue.TryDequeue(out var item))
                 {
                     batchToWrite.Add(item);
                 }
 
+                _logger.LogInformation("Flushing batch of {BatchSize} items", batchToWrite.Count);
+
                 if (batchToWrite.Count > 0)
                 {
                     await _influxDbService.WriteBatchAsync(batchToWrite, cancellationToken);
+                    _logger.LogInformation("Successfully wrote batch to InfluxDB");
+                }
+                else
+                {
+                    _logger.LogInformation("No items to flush");
                 }
             }
             catch (Exception ex)
@@ -80,6 +92,10 @@ public class InfluxDBDataWriter : IDataWriter, IDisposable
             {
                 _flushLock.Release();
             }
+        }
+        else
+        {
+            _logger.LogInformation("Flush operation already in progress");
         }
     }
 

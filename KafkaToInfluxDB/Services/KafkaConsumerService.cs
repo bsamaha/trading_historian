@@ -72,8 +72,15 @@ public class KafkaConsumerService : BackgroundService
         try
         {
             _logger.LogInformation("Processing message: {Message}", consumeResult.Message.Value);
-            var candleData = _parser.Parse(consumeResult.Message.Value);
-            await _dataWriter.WriteAsync(CandleData.MeasurementName, candleData.ToFields(), candleData.ToTags(), stoppingToken);
+            var candleData = CandleData.ParseCandleData(consumeResult.Message.Value);
+            _logger.LogInformation("Parsed CandleData: {@CandleData}", candleData);
+
+            var fields = candleData.ToFields();
+            var tags = candleData.ToTags();
+            _logger.LogInformation("Fields: {@Fields}", fields);
+            _logger.LogInformation("Tags: {@Tags}", tags);
+
+            await _dataWriter.WriteAsync(CandleData.MeasurementName, fields, tags, stoppingToken);
             _consumer.Commit(consumeResult);
             _logger.LogInformation("Processed and queued data for InfluxDB");
         }
@@ -85,11 +92,26 @@ public class KafkaConsumerService : BackgroundService
 
     private async Task ProcessMessage(ConsumeResult<Ignore, string> consumeResult, CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Received message: {Message}", consumeResult.Message.Value);
-        var candleData = _parser.Parse(consumeResult.Message.Value);
-        await WriteToInfluxDB(candleData, stoppingToken);
-        _consumer.Commit(consumeResult);
-        _logger.LogInformation("Processed and wrote data to InfluxDB");
+        try
+        {
+            _logger.LogInformation("Received message: {Message}", consumeResult.Message.Value);
+            var candleData = _parser.Parse(consumeResult.Message.Value);
+            await WriteToInfluxDB(candleData, stoppingToken);
+            _consumer.Commit(consumeResult);
+            _logger.LogInformation("Processed and wrote data to InfluxDB");
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogError(ex, "Invalid message received from Kafka");
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogError(ex, "Failed to parse message from Kafka");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing Kafka message");
+        }
     }
 
     private async Task WriteToInfluxDB(CandleData candleData, CancellationToken stoppingToken)

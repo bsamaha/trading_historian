@@ -1,19 +1,22 @@
-using Microsoft.Extensions.Logging;
-using KafkaToInfluxDB.Services;
+using Microsoft.Extensions.Configuration;
+using System;
 
-namespace KafkaToInfluxDB.Services;
-
-public class ConfigurationService
+namespace KafkaToInfluxDB.Services
 {
-    private readonly ILogger<AppConfig> _logger;
-
-    public ConfigurationService(ILogger<AppConfig> logger)
+    public class ConfigurationService
     {
-        _logger = logger;
-    }
+        private readonly IConfiguration _configuration;
 
-    public AppConfig GetAppConfig()
-    {
-        return AppConfig.LoadConfig(_logger);
+        public ConfigurationService(IConfiguration configuration)
+        {
+            _configuration = configuration;
+        }
+
+        public AppConfig GetAppConfig()
+        {
+            var appConfig = new AppConfig();
+            _configuration.Bind(appConfig);
+            return appConfig;
+        }
     }
 }

@@ -1,6 +1,5 @@
 using Newtonsoft.Json.Linq;
 using System;
-using System.Collections.Generic;
 using KafkaToInfluxDB.Exceptions;
 
 namespace KafkaToInfluxDB.Models;
@@ -43,15 +42,21 @@ public class CandleData
         try
         {
             var jObject = JObject.Parse(message);
+            var candle = jObject["events"]?[0]?["candles"]?[0] as JObject;
+            if (candle == null)
+            {
+                throw new KafkaToInfluxDBException("Invalid candle data structure");
+            }
+
             return new CandleData
             {
-                Start = jObject["start"]?.Value<long>() ?? 0,
-                High = jObject["high"]?.Value<decimal>() ?? 0m,
-                Low = jObject["low"]?.Value<decimal>() ?? 0m,
-                Open = jObject["open"]?.Value<decimal>() ?? 0m,
-                Close = jObject["close"]?.Value<decimal>() ?? 0m,
-                Volume = jObject["volume"]?.Value<decimal>() ?? 0m,
-                ProductId = jObject["product_id"]?.Value<string>()
+                Start = candle["start"]?.Value<long>() ?? 0,
+                High = candle["high"]?.Value<decimal>() ?? 0m,
+                Low = candle["low"]?.Value<decimal>() ?? 0m,
+                Open = candle["open"]?.Value<decimal>() ?? 0m,
+                Close = candle["close"]?.Value<decimal>() ?? 0m,
+                Volume = candle["volume"]?.Value<decimal>() ?? 0m,
+                ProductId = candle["product_id"]?.Value<string>()
             };
         }
         catch (Exception ex)

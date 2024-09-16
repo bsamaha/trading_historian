@@ -157,6 +157,8 @@ public class InfluxDBService : IInfluxDBService, IDisposable
 
     public async Task WriteBatchAsync(List<(string, Dictionary<string, object>, Dictionary<string, string>)> batchToWrite, CancellationToken cancellationToken)
     {
+        _logger.LogInformation("Writing batch of {Count} items to InfluxDB", batchToWrite.Count);
+
         var points = batchToWrite.Select(item => 
         {
             var (measurement, fields, tags) = item;
@@ -173,6 +175,8 @@ public class InfluxDBService : IInfluxDBService, IDisposable
                 point = point.Field(field.Key, field.Value);
             }
 
+            _logger.LogDebug("Created point: Measurement={Measurement}, Tags={@Tags}, Fields={@Fields}", measurement, tags, fields);
+
             return point;
         }).ToList();
 
@@ -180,7 +184,7 @@ public class InfluxDBService : IInfluxDBService, IDisposable
             .ExecuteAsync(async (ct) =>
             {
                 await _writeApiAsync.WritePointsAsync(points, _bucket, _org, ct);
-                _logger.LogInformation($"Successfully wrote {points.Count} data points to InfluxDB");
+                _logger.LogInformation("Successfully wrote {Count} data points to InfluxDB", points.Count);
             }, cancellationToken);
     }
 

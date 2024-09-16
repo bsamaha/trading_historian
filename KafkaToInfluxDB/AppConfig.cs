@@ -8,6 +8,7 @@ public class AppConfig
     public KafkaConfig Kafka { get; set; } = new KafkaConfig();
     public BatchConfig Batch { get; set; } = new BatchConfig();
     public InfluxDBConfig InfluxDB { get; set; } = new InfluxDBConfig();
+    public LoggingConfig Logging { get; set; } = new LoggingConfig();
 
     public class KafkaConfig
     {
@@ -36,5 +37,12 @@ public class AppConfig
         public string Org { get; set; } = Environment.GetEnvironmentVariable("INFLUXDB_ORG") ?? "";
         public int MaxRetries { get; set; } = int.Parse(Environment.GetEnvironmentVariable("INFLUXDB_MAX_RETRIES") ?? "3");
         public int BaseDelayMs { get; set; } = int.Parse(Environment.GetEnvironmentVariable("INFLUXDB_BASE_DELAY_MS") ?? "1000");
+    }
+
+    public class LoggingConfig
+    {
+        public LogLevel MinimumLevel { get; set; } = Enum.TryParse<LogLevel>(Environment.GetEnvironmentVariable("LOG_LEVEL"), true, out var logLevel) 
+            ? logLevel 
+            : LogLevel.Information;
     }
 }
