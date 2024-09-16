@@ -1,11 +1,8 @@
 using KafkaToInfluxDB.HealthChecks;
 using KafkaToInfluxDB.Services;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Confluent.Kafka;
-using System;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 namespace KafkaToInfluxDB;
 
@@ -24,15 +21,29 @@ public class Program
                 {
                     options.ListenAnyIP(8080);
                 });
+                webBuilder.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints =>
+                    {
+                        endpoints.MapHealthChecks("/health", new HealthCheckOptions
+                        {
+                            Predicate = _ => true
+                        });
+                        endpoints.MapHealthChecks("/ready", new HealthCheckOptions
+                        {
+                            Predicate = check => check.Tags.Contains("ready")
+                        });
+                    });
+                });
             })
             .ConfigureServices((hostContext, services) =>
             {
-                services.AddSingleton<ConfigurationService>();
-                services.AddSingleton(sp => sp.GetRequiredService<ConfigurationService>().GetAppConfig());
+                services.Configure<AppConfig>(hostContext.Configuration.GetSection("AppConfig"));
                 services.AddSingleton<IInfluxDBService, InfluxDBService>();
                 services.AddSingleton<IConsumer<Ignore, string>>(sp =>
                 {
-                    var appConfig = sp.GetRequiredService<AppConfig>();
+                    var appConfig = sp.GetRequiredService<IOptions<AppConfig>>().Value;
                     var config = new ConsumerConfig
                     {
                         BootstrapServers = appConfig.Kafka.BootstrapServers,
@@ -65,7 +76,6 @@ public class Program
                 });
 
                 services.AddHostedService<KafkaConsumerService>();
-                services.AddHostedService<DataGeneratorService>();
                 services.AddHostedService<GracefulShutdownService>();
 
                 services.AddLogging(builder =>
@@ -76,14 +86,14 @@ public class Program
                 });
 
                 services.AddHealthChecks()
-                    .AddCheck<KafkaHealthCheck>("kafka_health_check")
-                    .AddCheck<InfluxDBHealthCheck>("influxdb_health_check");
+                    .AddCheck<KafkaHealthCheck>("kafka_health_check", tags: new[] { "ready" })
+                    .AddCheck<InfluxDBHealthCheck>("influxdb_health_check", tags: new[] { "ready" });
 
                 services.AddControllers();
 
                 services.AddSingleton<IAdminClient>(sp =>
                 {
-                    var appConfig = sp.GetRequiredService<AppConfig>();
+                    var appConfig = sp.GetRequiredService<IOptions<AppConfig>>().Value;
                     var config = new AdminClientConfig
                     {
                         BootstrapServers = appConfig.Kafka.BootstrapServers

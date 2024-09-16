@@ -10,4 +10,5 @@ public interface IInfluxDBService : IDisposable
     Task WriteRandomDataPointAsync(CancellationToken cancellationToken = default);
     Task<bool> CheckHealthAsync(CancellationToken cancellationToken = default);
     Task WriteDataAsync(string measurement, Dictionary<string, object> fields, Dictionary<string, string> tags, CancellationToken cancellationToken = default);
+    Task WriteBatchAsync(List<(string, Dictionary<string, object>, Dictionary<string, string>)> batchToWrite, CancellationToken cancellationToken);
 }

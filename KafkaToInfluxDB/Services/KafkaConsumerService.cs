@@ -12,21 +12,25 @@ namespace KafkaToInfluxDB.Services;
 public class KafkaConsumerService : BackgroundService
 {
     private readonly ILogger<KafkaConsumerService> _logger;
-    private readonly IInfluxDBService _influxDbService;
     private readonly IConsumer<Ignore, string> _consumer;
+    private readonly ICandleDataParser _parser;
+    private readonly IDataWriter _dataWriter;
     private readonly AppConfig _appConfig;
-    private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+    private readonly SemaphoreSlim _maxParallelism;
 
     public KafkaConsumerService(
         ILogger<KafkaConsumerService> logger,
-        IInfluxDBService influxDbService,
         IConsumer<Ignore, string> consumer,
+        ICandleDataParser parser,
+        IDataWriter dataWriter,
         AppConfig appConfig)
     {
         _logger = logger;
-        _influxDbService = influxDbService;
         _consumer = consumer;
+        _parser = parser;
+        _dataWriter = dataWriter;
         _appConfig = appConfig;
+        _maxParallelism = new SemaphoreSlim(_appConfig.Kafka.MaxParallelism);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -38,63 +42,81 @@ public class KafkaConsumerService : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                try
+                var consumeResult = _consumer.Consume(TimeSpan.FromSeconds(1));
+                if (consumeResult != null)
                 {
-                    var consumeResult = _consumer.Consume(TimeSpan.FromSeconds(1));
-                    if (consumeResult != null)
+                    await _maxParallelism.WaitAsync(stoppingToken);
+                    _ = Task.Run(async () =>
                     {
-                        _logger.LogInformation("Received message: {Message}", consumeResult.Message.Value);
-                        var candleData = CandleData.ParseCandleData(consumeResult.Message.Value);
-                        await _influxDbService.WriteDataAsync(
-                            "candle_data",
-                            new Dictionary<string, object>
-                            {
-                                { "open", candleData.Open },
-                                { "high", candleData.High },
-                                { "low", candleData.Low },
-                                { "close", candleData.Close },
-                                { "volume", candleData.Volume }
-                            },
-                            new Dictionary<string, string>
-                            {
-                                { "product_id", candleData.ProductId ?? "unknown" }
-                            },
-                            _cts.Token
-                        );
-                        _consumer.Commit(consumeResult);
-                        _logger.LogInformation("Processed and wrote data to InfluxDB");
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    _logger.LogInformation("Consume operation canceled, shutting down.");
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error processing Kafka message");
+                        try
+                        {
+                            await ProcessMessageAsync(consumeResult, stoppingToken);
+                        }
+                        finally
+                        {
+                            _maxParallelism.Release();
+                        }
+                    }, stoppingToken);
                 }
             }
         }
         finally
         {
-            _logger.LogInformation("KafkaConsumerService is stopping. Closing consumer...");
-            _consumer.Close();
+            await _dataWriter.FlushAsync(stoppingToken);
+            CloseConsumer();
         }
+    }
 
+    private async Task ProcessMessageAsync(ConsumeResult<Ignore, string> consumeResult, CancellationToken stoppingToken)
+    {
+        try
+        {
+            _logger.LogInformation("Processing message: {Message}", consumeResult.Message.Value);
+            var candleData = _parser.Parse(consumeResult.Message.Value);
+            await _dataWriter.WriteAsync(CandleData.MeasurementName, candleData.ToFields(), candleData.ToTags(), stoppingToken);
+            _consumer.Commit(consumeResult);
+            _logger.LogInformation("Processed and queued data for InfluxDB");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing Kafka message");
+        }
+    }
+
+    private async Task ProcessMessage(ConsumeResult<Ignore, string> consumeResult, CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("Received message: {Message}", consumeResult.Message.Value);
+        var candleData = _parser.Parse(consumeResult.Message.Value);
+        await WriteToInfluxDB(candleData, stoppingToken);
+        _consumer.Commit(consumeResult);
+        _logger.LogInformation("Processed and wrote data to InfluxDB");
+    }
+
+    private async Task WriteToInfluxDB(CandleData candleData, CancellationToken stoppingToken)
+    {
+        await _dataWriter.WriteAsync(
+            CandleData.MeasurementName,
+            candleData.ToFields(),
+            candleData.ToTags(),
+            stoppingToken
+        );
+    }
+
+    private void CloseConsumer()
+    {
+        _logger.LogInformation("KafkaConsumerService is stopping. Closing consumer...");
+        _consumer.Close();
         _logger.LogInformation("KafkaConsumerService has stopped.");
     }
 
     public override async Task StopAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("KafkaConsumerService is stopping.");
-        _cts.Cancel();
         await base.StopAsync(stoppingToken);
     }
 
     public override void Dispose()
     {
-        _cts.Dispose();
         _consumer?.Dispose();
         base.Dispose();
     }

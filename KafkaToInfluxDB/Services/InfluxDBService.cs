@@ -7,7 +7,8 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using KafkaToInfluxDB.Exceptions;
-using System.Linq;
+using KafkaToInfluxDB.Resilience;
+using Polly;
 
 namespace KafkaToInfluxDB.Services;
 
@@ -17,14 +18,13 @@ public class InfluxDBService : IInfluxDBService, IDisposable
     private readonly WriteApiAsync _writeApiAsync;
     private readonly string _org;
     private readonly string _bucket;
-    private readonly string _url;
-    private readonly string _token;
     private readonly ILogger<InfluxDBService> _logger;
-    private readonly CircuitBreaker _circuitBreaker = new CircuitBreaker();
+    private readonly ResiliencePolicies _resiliencePolicies;
 
     public InfluxDBService(AppConfig appConfig, ILogger<InfluxDBService> logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _resiliencePolicies = new ResiliencePolicies(logger);
 
         if (appConfig?.InfluxDB == null)
         {
@@ -33,25 +33,25 @@ public class InfluxDBService : IInfluxDBService, IDisposable
 
         _org = appConfig.InfluxDB.Org ?? throw new ArgumentNullException(nameof(appConfig.InfluxDB.Org), "InfluxDB Org is not configured");
         _bucket = appConfig.InfluxDB.Bucket ?? throw new ArgumentNullException(nameof(appConfig.InfluxDB.Bucket), "InfluxDB Bucket is not configured");
-        _url = appConfig.InfluxDB.Url ?? throw new ArgumentNullException(nameof(appConfig.InfluxDB.Url), "InfluxDB Url is not configured");
-        _token = appConfig.InfluxDB.Token ?? throw new ArgumentNullException(nameof(appConfig.InfluxDB.Token), "InfluxDB Token is not configured");
+        var url = appConfig.InfluxDB.Url ?? throw new ArgumentNullException(nameof(appConfig.InfluxDB.Url), "InfluxDB Url is not configured");
+        var token = appConfig.InfluxDB.Token ?? throw new ArgumentNullException(nameof(appConfig.InfluxDB.Token), "InfluxDB Token is not configured");
 
-        if (string.IsNullOrEmpty(_token))
+        if (string.IsNullOrEmpty(token))
         {
-            throw new ArgumentNullException(nameof(_token), "InfluxDB Token is not configured");
+            throw new ArgumentNullException(nameof(token), "InfluxDB Token is not configured");
         }
 
         _logger.LogInformation("Initializing InfluxDBService with configuration: {@InfluxDBConfig}", new
         {
-            Url = _url,
+            Url = url,
             Org = _org,
             Bucket = _bucket,
-            HasToken = !string.IsNullOrEmpty(_token)
+            HasToken = !string.IsNullOrEmpty(token)
         });
 
-        var options = new InfluxDBClientOptions(_url)
+        var options = new InfluxDBClientOptions(url)
         {
-            Token = _token,
+            Token = token,
             Org = _org,
             Bucket = _bucket
         };
@@ -59,11 +59,6 @@ public class InfluxDBService : IInfluxDBService, IDisposable
         _client = new InfluxDBClient(options);
         _writeApiAsync = _client.GetWriteApiAsync();
         _logger.LogInformation("InfluxDB client and WriteApiAsync initialized successfully");
-
-        _circuitBreaker = new CircuitBreaker(
-            int.Parse(Environment.GetEnvironmentVariable("CIRCUIT_BREAKER_FAILURE_THRESHOLD") ?? "5"),
-            int.Parse(Environment.GetEnvironmentVariable("CIRCUIT_BREAKER_BREAK_DURATION_SECONDS") ?? "30")
-        );
     }
 
     public async Task EnsureOrganizationAndBucketExistAsync(CancellationToken cancellationToken = default)
@@ -152,69 +147,41 @@ public class InfluxDBService : IInfluxDBService, IDisposable
             point = point.Field(field.Key, field.Value);
         }
 
-        int retries = 0;
-        int maxRetries = int.Parse(Environment.GetEnvironmentVariable("INFLUXDB_MAX_RETRIES") ?? "3");
-        int baseDelay = int.Parse(Environment.GetEnvironmentVariable("INFLUXDB_BASE_DELAY_MS") ?? "1000");
-
-        while (true)
-        {
-            try
+        await Policy.WrapAsync(_resiliencePolicies.RetryPolicy, _resiliencePolicies.CircuitBreakerPolicy)
+            .ExecuteAsync(async (ct) =>
             {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    _logger.LogInformation("Write operation canceled due to shutdown.");
-                    return;
-                }
-
-                if (!_circuitBreaker.AllowExecution())
-                {
-                    _logger.LogWarning("Circuit breaker is open. Skipping InfluxDB write operation.");
-                    return;
-                }
-
-                await _writeApiAsync.WritePointAsync(point, _bucket, _org, cancellationToken);
+                await _writeApiAsync.WritePointAsync(point, _bucket, _org, ct);
                 _logger.LogInformation($"Successfully wrote data point to measurement: {measurement}");
-                _circuitBreaker.OnSuccess();
-                return;
-            }
-            catch (OperationCanceledException)
+            }, cancellationToken);
+    }
+
+    public async Task WriteBatchAsync(List<(string, Dictionary<string, object>, Dictionary<string, string>)> batchToWrite, CancellationToken cancellationToken)
+    {
+        var points = batchToWrite.Select(item => 
+        {
+            var (measurement, fields, tags) = item;
+            var point = PointData.Measurement(measurement)
+                .Timestamp(DateTime.UtcNow, WritePrecision.Ns);
+
+            foreach (var tag in tags)
             {
-                _logger.LogInformation("Write operation canceled due to shutdown.");
-                return;
+                point = point.Tag(tag.Key, tag.Value);
             }
-            catch (Exception ex)
+
+            foreach (var field in fields)
             {
-                retries++;
-                _circuitBreaker.OnFailure();
-                int delay = (int)(baseDelay * Math.Pow(2, retries - 1)); // Exponential backoff
-
-                if (ex is TaskCanceledException || ex is OperationCanceledException)
-                {
-                    _logger.LogWarning(ex, $"InfluxDB write operation was canceled. Retry {retries} of {maxRetries} in {delay}ms");
-                }
-                else
-                {
-                    _logger.LogError(ex, $"Error writing data point to measurement: {measurement}. Retry {retries} of {maxRetries} in {delay}ms");
-                }
-
-                if (retries >= maxRetries)
-                {
-                    _logger.LogError($"Failed to write data point after {maxRetries} attempts. Skipping this data point.");
-                    await LogFailedWriteAsync(point, ex);
-                    return; // Skip this data point instead of throwing an exception
-                }
-
-                try
-                {
-                    await Task.Delay(delay, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    _logger.LogWarning("Delay between retries was canceled.");
-                    return;
-                }
+                point = point.Field(field.Key, field.Value);
             }
-        }
+
+            return point;
+        }).ToList();
+
+        await Policy.WrapAsync(_resiliencePolicies.RetryPolicy, _resiliencePolicies.CircuitBreakerPolicy)
+            .ExecuteAsync(async (ct) =>
+            {
+                await _writeApiAsync.WritePointsAsync(points, _bucket, _org, ct);
+                _logger.LogInformation($"Successfully wrote {points.Count} data points to InfluxDB");
+            }, cancellationToken);
     }
 
     private async Task LogFailedWriteAsync(PointData point, Exception exception)
@@ -309,50 +276,6 @@ public class InfluxDBService : IInfluxDBService, IDisposable
     public void Dispose()
     {
         _client?.Dispose();
-    }
-
-    private class CircuitBreaker
-    {
-        private int _failureCount;
-        private DateTime _lastFailureTime;
-        private readonly int _threshold;
-        private readonly TimeSpan _breakDuration;
-        private readonly object _lock = new object();
-
-        public CircuitBreaker(int threshold = 5, int breakDurationSeconds = 30)
-        {
-            _threshold = threshold;
-            _breakDuration = TimeSpan.FromSeconds(breakDurationSeconds);
-        }
-
-        public bool AllowExecution()
-        {
-            lock (_lock)
-            {
-                if (_failureCount >= _threshold && DateTime.UtcNow - _lastFailureTime < _breakDuration)
-                {
-                    return false;
-                }
-                return true;
-            }
-        }
-
-        public void OnSuccess()
-        {
-            lock (_lock)
-            {
-                _failureCount = 0;
-            }
-        }
-
-        public void OnFailure()
-        {
-            lock (_lock)
-            {
-                _failureCount++;
-                _lastFailureTime = DateTime.UtcNow;
-            }
-        }
     }
 }
 

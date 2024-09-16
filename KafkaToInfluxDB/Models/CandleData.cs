@@ -1,5 +1,6 @@
 using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Generic;
 using KafkaToInfluxDB.Exceptions;
 
 namespace KafkaToInfluxDB.Models;
@@ -13,6 +14,29 @@ public class CandleData
     public decimal Close { get; set; }
     public decimal Volume { get; set; }
     public string? ProductId { get; set; }
+
+    public const string MeasurementName = "candle_data";
+
+    public Dictionary<string, object> ToFields()
+    {
+        return new Dictionary<string, object>
+        {
+            { nameof(Open), Open },
+            { nameof(High), High },
+            { nameof(Low), Low },
+            { nameof(Close), Close },
+            { nameof(Volume), Volume },
+            { nameof(Start), Start }
+        };
+    }
+
+    public Dictionary<string, string> ToTags()
+    {
+        return new Dictionary<string, string>
+        {
+            { "product_id", ProductId ?? "unknown" }
+        };
+    }
 
     public static CandleData ParseCandleData(string message)
     {

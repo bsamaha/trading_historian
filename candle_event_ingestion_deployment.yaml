@@ -12,7 +12,6 @@ spec:
       labels:
         app: candle-event-ingestion
     spec:
-      terminationGracePeriodSeconds: 60
       containers:
       - name: candle-event-ingestion
         image: bsamaha/candle-event-ingestion:latest
@@ -55,6 +54,14 @@ spec:
           value: "5"
         - name: CIRCUIT_BREAKER_BREAK_DURATION_SECONDS
           value: "30"
+        - name: KAFKA_MAX_PARALLELISM
+          value: "10"
+        - name: BATCH_SIZE
+          value: "100"
+        - name: BATCH_FLUSH_INTERVAL_SECONDS
+          value: "5"
+        - name: BATCH_MAX_QUEUE_SIZE
+          value: "10000"
         resources:
           requests:
             cpu: "400m"
